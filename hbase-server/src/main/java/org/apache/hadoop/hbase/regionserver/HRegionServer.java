@@ -332,8 +332,7 @@ public class HRegionServer extends HasThread implements
   /**
    * The server name the Master sees us as.  Its made from the hostname the
    * master passes us, port, and server startcode. Gets set after registration
-   * against  Master.  The hostname can differ from the hostname in {@link #isa}
-   * but usually doesn't if both servers resolve .
+   * against  Master.
    */
   protected ServerName serverName;
 
@@ -778,7 +777,7 @@ public class HRegionServer extends HasThread implements
       try {
         this.infoServer.stop();
       } catch (Exception e) {
-        e.printStackTrace();
+        LOG.error("Failed to stop infoServer", e);
       }
     }
     // Send cache a shutdown.
@@ -1084,7 +1083,7 @@ public class HRegionServer extends HasThread implements
         }
         String value = e.getValue();
         if (LOG.isDebugEnabled()) {
-          LOG.debug("Config from master: " + key + "=" + value);
+          LOG.info("Config from master: " + key + "=" + value);
         }
         this.conf.set(key, value);
       }
@@ -1535,6 +1534,9 @@ public class HRegionServer extends HasThread implements
     }
     port = this.infoServer.getPort();
     conf.setInt(HConstants.REGIONSERVER_INFO_PORT, port);
+    int masterInfoPort = conf.getInt(HConstants.MASTER_INFO_PORT,
+      HConstants.DEFAULT_MASTER_INFOPORT);
+    conf.setInt("hbase.master.info.port.orig", masterInfoPort);
     conf.setInt(HConstants.MASTER_INFO_PORT, port);
     return port;
   }
@@ -1613,7 +1615,7 @@ public class HRegionServer extends HasThread implements
   public void postOpenDeployTasks(final HRegion r, final CatalogTracker ct)
   throws KeeperException, IOException {
     rpcServices.checkOpen();
-    LOG.info("Post open deploy tasks for region=" + r.getRegionNameAsString());
+    LOG.info("Post open deploy tasks for " + r.getRegionNameAsString());
     // Do checks to see if we need to compact (references or too many files)
     for (Store s : r.getStores().values()) {
       if (s.hasReferences() || s.needsCompaction()) {
@@ -1637,7 +1639,7 @@ public class HRegionServer extends HasThread implements
       MetaEditor.updateRegionLocation(ct, r.getRegionInfo(),
         this.serverName, openSeqNum);
     }
-    LOG.info("Finished post open deploy task for " + r.getRegionNameAsString());
+    LOG.debug("Finished post open deploy task for " + r.getRegionNameAsString());
 
   }
 
@@ -2446,9 +2448,11 @@ public class HRegionServer extends HasThread implements
       String regionNameStr = regionName == null?
         encodedRegionName: Bytes.toStringBinary(regionName);
       if (isOpening != null && isOpening.booleanValue()) {
-        throw new RegionOpeningException("Region " + regionNameStr + " is opening");
+        throw new RegionOpeningException("Region " + regionNameStr + 
+          " is opening on " + this.serverName);
       }
-      throw new NotServingRegionException("Region " + regionNameStr + " is not online");
+      throw new NotServingRegionException("Region " + regionNameStr + 
+        " is not online on " + this.serverName);
     }
     return region;
   }
