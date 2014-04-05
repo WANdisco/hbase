@@ -64,7 +64,6 @@ import org.apache.hadoop.hbase.executor.EventType;
 import org.apache.hadoop.hbase.executor.ExecutorService;
 import org.apache.hadoop.hbase.ipc.RpcClient;
 import org.apache.hadoop.hbase.ipc.RpcClient.FailedServerException;
-import org.apache.hadoop.hbase.ipc.RpcClient.FailedServerException;
 import org.apache.hadoop.hbase.ipc.ServerNotRunningYetException;
 import org.apache.hadoop.hbase.master.RegionState.State;
 import org.apache.hadoop.hbase.master.balancer.FavoredNodeAssignmentHelper;
@@ -1699,10 +1698,10 @@ public class AssignmentManager extends ZooKeeperListener {
         if (t instanceof RemoteException) {
           t = ((RemoteException)t).unwrapRemoteException();
         }
+        boolean logRetries = true;
         if (t instanceof NotServingRegionException
             || t instanceof RegionServerStoppedException
-            || t instanceof ServerNotRunningYetException
-            || t instanceof FailedServerException) {
+            || t instanceof ServerNotRunningYetException) {
           LOG.debug("Offline " + region.getRegionNameAsString()
             + ", it's not any more on " + server, t);
           if (transitionInZK) {
@@ -1712,34 +1711,48 @@ public class AssignmentManager extends ZooKeeperListener {
             regionOffline(region);
           }
           return;
-        } else if (state != null
-            && t instanceof RegionAlreadyInTransitionException) {
-          // RS is already processing this region, only need to update the timestamp
-          LOG.debug("update " + state + " the timestamp.");
-          state.updateTimestampToNow();
-          if (maxWaitTime < 0) {
-            maxWaitTime = EnvironmentEdgeManager.currentTimeMillis()
-              + this.server.getConfiguration().getLong(ALREADY_IN_TRANSITION_WAITTIME,
-                DEFAULT_ALREADY_IN_TRANSITION_WAITTIME);
-          }
-          try {
+        } else if ((t instanceof FailedServerException) || (state != null && 
+            t instanceof RegionAlreadyInTransitionException)) {
+          long sleepTime = 0;
+          Configuration conf = this.server.getConfiguration();
+          if(t instanceof FailedServerException) {
+            sleepTime = 1 + conf.getInt(RpcClient.FAILED_SERVER_EXPIRY_KEY, 
+                  RpcClient.FAILED_SERVER_EXPIRY_DEFAULT);
+          } else {
+            // RS is already processing this region, only need to update the timestamp
+            LOG.debug("update " + state + " the timestamp.");
+            state.updateTimestampToNow();
+            if (maxWaitTime < 0) {
+              maxWaitTime =
+                  EnvironmentEdgeManager.currentTimeMillis()
+                      + conf.getLong(ALREADY_IN_TRANSITION_WAITTIME,
+                        DEFAULT_ALREADY_IN_TRANSITION_WAITTIME);
+            }
             long now = EnvironmentEdgeManager.currentTimeMillis();
             if (now < maxWaitTime) {
               LOG.debug("Region is already in transition; "
                 + "waiting up to " + (maxWaitTime - now) + "ms", t);
-              Thread.sleep(100);
+              sleepTime = 100;
               i--; // reset the try count
+              logRetries = false;
+            }
+          }
+          try {
+            if (sleepTime > 0) {
+              Thread.sleep(sleepTime);
             }
           } catch (InterruptedException ie) {
             LOG.warn("Failed to unassign "
               + region.getRegionNameAsString() + " since interrupted", ie);
             Thread.currentThread().interrupt();
-            if (!tomActivated) {
+            if (!tomActivated && state != null) {
               regionStates.updateRegionState(region, State.FAILED_CLOSE);
             }
             return;
           }
-        } else {
+        }
+
+        if (logRetries) {
           LOG.info("Server " + server + " returned " + t + " for "
             + region.getRegionNameAsString() + ", try=" + i
             + " of " + this.maximumAttempts, t);
@@ -2211,11 +2224,9 @@ public class AssignmentManager extends ZooKeeperListener {
       }
       LOG.debug("No previous transition plan found (or ignoring " +
         "an existing plan) for " + region.getRegionNameAsString() +
-        "; generated random plan=" + randomPlan + "; " +
-        serverManager.countOfRegionServers() +
-               " (online=" + serverManager.getOnlineServers().size() +
-               ", available=" + destServers.size() + ") available servers" +
-               ", forceNewPlan=" + forceNewPlan);
+        "; generated random plan=" + randomPlan + "; " + destServers.size() +
+        " (online=" + serverManager.getOnlineServers().size() +
+        ") available servers, forceNewPlan=" + forceNewPlan);
         return randomPlan;
       }
     LOG.debug("Using pre-existing plan for " +
