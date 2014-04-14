@@ -18,15 +18,13 @@
 package org.apache.hadoop.hbase.security.access;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.fail;
 
-import java.security.PrivilegedExceptionAction;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.List;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.Coprocessor;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HColumnDescriptor;
@@ -37,11 +35,16 @@ import org.apache.hadoop.hbase.client.Delete;
 import org.apache.hadoop.hbase.client.Get;
 import org.apache.hadoop.hbase.client.HBaseAdmin;
 import org.apache.hadoop.hbase.client.HTable;
+import org.apache.hadoop.hbase.client.Increment;
 import org.apache.hadoop.hbase.client.Put;
+import org.apache.hadoop.hbase.client.Result;
+import org.apache.hadoop.hbase.client.ResultScanner;
+import org.apache.hadoop.hbase.client.Scan;
 import org.apache.hadoop.hbase.master.MasterCoprocessorHost;
 import org.apache.hadoop.hbase.regionserver.RegionServerCoprocessorHost;
 import org.apache.hadoop.hbase.security.User;
 import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.hadoop.hbase.util.TestTableName;
 
 import org.apache.log4j.Level;
@@ -55,9 +58,11 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 
+import com.google.common.collect.Lists;
+
 @Category(MediumTests.class)
-public class TestCellACLWithMultipleVersions extends SecureTestUtil {
-  private static final Log LOG = LogFactory.getLog(TestCellACLWithMultipleVersions.class);
+public class TestCellACLs extends SecureTestUtil {
+  private static final Log LOG = LogFactory.getLog(TestCellACLs.class);
 
   static {
     Logger.getLogger(AccessController.class).setLevel(Level.TRACE);
@@ -71,6 +76,9 @@ public class TestCellACLWithMultipleVersions extends SecureTestUtil {
   private static final byte[] TEST_FAMILY = Bytes.toBytes("f1");
   private static final byte[] TEST_ROW = Bytes.toBytes("cellpermtest");
   private static final byte[] TEST_Q1 = Bytes.toBytes("q1");
+  private static final byte[] TEST_Q2 = Bytes.toBytes("q2");
+  private static final byte[] TEST_Q3 = Bytes.toBytes("q3");
+  private static final byte[] TEST_Q4 = Bytes.toBytes("q4");
   private static final byte[] ZERO = Bytes.toBytes(0L);
 
   private static Configuration conf;
@@ -133,9 +141,8 @@ public class TestCellACLWithMultipleVersions extends SecureTestUtil {
   }
 
   @Test
-  public void testCellPermissionwithVersions() throws Exception {
-    // store two sets of values, one store with a cell level ACL, and one
-    // without
+  public void testCellPermissions() throws Exception {
+    // store two sets of values, one store with a cell level ACL, and one without
     verifyAllowed(new AccessTestAction() {
       @Override
       public Object run() throws Exception {
@@ -144,20 +151,17 @@ public class TestCellACLWithMultipleVersions extends SecureTestUtil {
           Put p;
           // with ro ACL
           p = new Put(TEST_ROW).add(TEST_FAMILY, TEST_Q1, ZERO);
-          p.setACL(USER_OTHER.getShortName(), new Permission(Permission.Action.WRITE));
-          t.put(p);
-          // with ro ACL
-          p = new Put(TEST_ROW).add(TEST_FAMILY, TEST_Q1, ZERO);
           p.setACL(USER_OTHER.getShortName(), new Permission(Permission.Action.READ));
           t.put(p);
-          p = new Put(TEST_ROW).add(TEST_FAMILY, TEST_Q1, ZERO);
-          p.setACL(USER_OTHER.getShortName(), new Permission(Permission.Action.WRITE));
+          // with rw ACL
+          p = new Put(TEST_ROW).add(TEST_FAMILY, TEST_Q2, ZERO);
+          p.setACL(USER_OTHER.getShortName(), new Permission(Permission.Action.READ,
+            Permission.Action.WRITE));
           t.put(p);
-          p = new Put(TEST_ROW).add(TEST_FAMILY, TEST_Q1, ZERO);
-          p.setACL(USER_OTHER.getShortName(), new Permission(Permission.Action.READ));
-          t.put(p);
-          p = new Put(TEST_ROW).add(TEST_FAMILY, TEST_Q1, ZERO);
-          p.setACL(USER_OTHER.getShortName(), new Permission(Permission.Action.WRITE));
+          // no ACL
+          p = new Put(TEST_ROW)
+            .add(TEST_FAMILY, TEST_Q3, ZERO)
+            .add(TEST_FAMILY, TEST_Q4, ZERO);
           t.put(p);
         } finally {
           t.close();
@@ -171,8 +175,7 @@ public class TestCellACLWithMultipleVersions extends SecureTestUtil {
     AccessTestAction getQ1 = new AccessTestAction() {
       @Override
       public Object run() throws Exception {
-        Get get = new Get(TEST_ROW);
-        get.setMaxVersions(10);
+        Get get = new Get(TEST_ROW).addColumn(TEST_FAMILY, TEST_Q1);
         HTable t = new HTable(conf, TEST_TABLE.getTableName());
         try {
           return t.get(get).listCells();
@@ -182,11 +185,10 @@ public class TestCellACLWithMultipleVersions extends SecureTestUtil {
       }
     };
 
-    AccessTestAction get2 = new AccessTestAction() {
+    AccessTestAction getQ2 = new AccessTestAction() {
       @Override
       public Object run() throws Exception {
-        Get get = new Get(TEST_ROW);
-        get.setMaxVersions(10);
+        Get get = new Get(TEST_ROW).addColumn(TEST_FAMILY, TEST_Q2);
         HTable t = new HTable(conf, TEST_TABLE.getTableName());
         try {
           return t.get(get).listCells();
@@ -195,158 +197,187 @@ public class TestCellACLWithMultipleVersions extends SecureTestUtil {
         }
       }
     };
+
+    AccessTestAction getQ3 = new AccessTestAction() {
+      @Override
+      public Object run() throws Exception {
+        Get get = new Get(TEST_ROW).addColumn(TEST_FAMILY, TEST_Q3);
+        HTable t = new HTable(conf, TEST_TABLE.getTableName());
+        try {
+          return t.get(get).listCells();
+        } finally {
+          t.close();
+        }
+      }
+    };
+
+    AccessTestAction getQ4 = new AccessTestAction() {
+      @Override
+      public Object run() throws Exception {
+        Get get = new Get(TEST_ROW).addColumn(TEST_FAMILY, TEST_Q4);
+        HTable t = new HTable(conf, TEST_TABLE.getTableName());
+        try {
+          return t.get(get).listCells();
+        } finally {
+          t.close();
+        }
+      }
+    };
+
     // Confirm special read access set at cell level
 
-    verifyAllowed(USER_OTHER, getQ1, 2);
+    verifyAllowed(getQ1, USER_OTHER);
+    verifyAllowed(getQ2, USER_OTHER);
 
-    // store two sets of values, one store with a cell level ACL, and one
-    // without
-    verifyAllowed(new AccessTestAction() {
+    // Confirm this access does not extend to other cells
+
+    verifyDenied(getQ3, USER_OTHER);
+    verifyDenied(getQ4, USER_OTHER);
+
+    /* ---- Scans ---- */
+
+    // check that a scan over the test data returns the expected number of KVs
+
+    final List<Cell> scanResults = Lists.newArrayList();
+
+    AccessTestAction scanAction = new AccessTestAction() {
+      @Override
+      public List<Cell> run() throws Exception {
+        Scan scan = new Scan();
+        scan.setStartRow(TEST_ROW);
+        scan.setStopRow(Bytes.add(TEST_ROW, new byte[]{ 0 } ));
+        scan.addFamily(TEST_FAMILY);
+        HTable t = new HTable(conf, TEST_TABLE.getTableName());
+        try {
+          ResultScanner scanner = t.getScanner(scan);
+          Result result = null;
+          do {
+            result = scanner.next();
+            if (result != null) {
+              scanResults.addAll(result.listCells());
+            }
+          } while (result != null);
+        } finally {
+          t.close();
+        }
+        return scanResults;
+      }
+    };
+
+    // owner will see all values
+    scanResults.clear();
+    verifyAllowed(scanAction, USER_OWNER);
+    assertEquals(4, scanResults.size());
+
+    // other user will see 2 values
+    scanResults.clear();
+    verifyAllowed(scanAction, USER_OTHER);
+    assertEquals(2, scanResults.size());
+
+    /* ---- Increments ---- */
+
+    AccessTestAction incrementQ1 = new AccessTestAction() {
       @Override
       public Object run() throws Exception {
+        Increment i = new Increment(TEST_ROW).addColumn(TEST_FAMILY, TEST_Q1, 1L);
         HTable t = new HTable(conf, TEST_TABLE.getTableName());
         try {
-          Put p;
-          p = new Put(TEST_ROW).add(TEST_FAMILY, TEST_Q1, ZERO);
-          p.setACL(USER_OTHER.getShortName(), new Permission(Permission.Action.WRITE));
-          t.put(p);
-          p = new Put(TEST_ROW).add(TEST_FAMILY, TEST_Q1, ZERO);
-          p.setACL(USER_OTHER.getShortName(), new Permission(Permission.Action.READ));
-          t.put(p);
-          p = new Put(TEST_ROW).add(TEST_FAMILY, TEST_Q1, ZERO);
-          p.setACL(USER_OTHER.getShortName(), new Permission(Permission.Action.WRITE));
-          t.put(p);
+          t.increment(i);
         } finally {
           t.close();
         }
         return null;
       }
-    }, USER_OWNER);
-    // Confirm special read access set at cell level
+    };
 
-    verifyAllowed(USER_OTHER, get2, 1);
-  }
-
-  @Test
-  public void testCellPermissionsWithDeleteMutipleVersions() throws Exception {
-    // table/column/qualifier level permissions
-    final byte[] TEST_ROW1 = Bytes.toBytes("r1");
-    final byte[] TEST_ROW2 = Bytes.toBytes("r2");
-    final byte[] TEST_Q1 = Bytes.toBytes("q1");
-    final byte[] TEST_Q2 = Bytes.toBytes("q2");
-    final byte[] ZERO = Bytes.toBytes(0L);
-
-    // additional test user
-    final User user1 = User.createUserForTesting(conf, "user1", new String[0]);
-    final User user2 = User.createUserForTesting(conf, "user2", new String[0]);
-
-    verifyAllowed(new AccessTestAction() {
+    AccessTestAction incrementQ2 = new AccessTestAction() {
       @Override
       public Object run() throws Exception {
+        Increment i = new Increment(TEST_ROW).addColumn(TEST_FAMILY, TEST_Q2, 1L);
         HTable t = new HTable(conf, TEST_TABLE.getTableName());
         try {
-          // with rw ACL for "user1"
-          Put p = new Put(TEST_ROW1);
-          p.add(TEST_FAMILY, TEST_Q1, ZERO);
-          p.add(TEST_FAMILY, TEST_Q2, ZERO);
-          p.setACL(user1.getShortName(), new Permission(Permission.Action.READ,
-              Permission.Action.WRITE));
-          t.put(p);
-          // with rw ACL for "user1"
-          p = new Put(TEST_ROW2);
-          p.add(TEST_FAMILY, TEST_Q1, ZERO);
-          p.add(TEST_FAMILY, TEST_Q2, ZERO);
-          p.setACL(user1.getShortName(), new Permission(Permission.Action.READ,
-              Permission.Action.WRITE));
-          t.put(p);
+          t.increment(i);
         } finally {
           t.close();
         }
         return null;
       }
-    }, USER_OWNER);
+    };
 
-    verifyAllowed(new AccessTestAction() {
+    AccessTestAction incrementQ2newDenyACL = new AccessTestAction() {
       @Override
       public Object run() throws Exception {
+        Increment i = new Increment(TEST_ROW).addColumn(TEST_FAMILY, TEST_Q2, 1L);
+        // Tag this increment with an ACL that denies write permissions to USER_OTHER
+        i.setACL(USER_OTHER.getShortName(), new Permission(Permission.Action.READ));
         HTable t = new HTable(conf, TEST_TABLE.getTableName());
         try {
-          // with rw ACL for "user1" and "user2"
-          Put p = new Put(TEST_ROW1);
-          p.add(TEST_FAMILY, TEST_Q1, ZERO);
-          p.add(TEST_FAMILY, TEST_Q2, ZERO);
-          Map<String, Permission> perms = new HashMap<String, Permission>();
-          perms.put(user1.getShortName(), new Permission(Permission.Action.READ,
-              Permission.Action.WRITE));
-          perms.put(user2.getShortName(), new Permission(Permission.Action.READ,
-              Permission.Action.WRITE));
-          p.setACL(perms);
-          t.put(p);
-          // with rw ACL for "user1" and "user2"
-          p = new Put(TEST_ROW2);
-          p.add(TEST_FAMILY, TEST_Q1, ZERO);
-          p.add(TEST_FAMILY, TEST_Q2, ZERO);
-          p.setACL(perms);
-          t.put(p);
+          t.increment(i);
         } finally {
           t.close();
         }
         return null;
       }
-    }, user1);
+    };
 
-    // user1 should be allowed to delete TEST_ROW1 as he is having write permission on both
-    // versions of the cells
-    user1.runAs(new PrivilegedExceptionAction<Void>() {
+    AccessTestAction incrementQ3 = new AccessTestAction() {
       @Override
-      public Void run() throws Exception {
+      public Object run() throws Exception {
+        Increment i = new Increment(TEST_ROW).addColumn(TEST_FAMILY, TEST_Q3, 1L);
         HTable t = new HTable(conf, TEST_TABLE.getTableName());
         try {
-          Delete d = new Delete(TEST_ROW1);
-          d.deleteColumns(TEST_FAMILY, TEST_Q1);
-          d.deleteColumns(TEST_FAMILY, TEST_Q2);
-          t.delete(d);
+          t.increment(i);
         } finally {
           t.close();
         }
         return null;
       }
-    });
-    // user2 should not be allowed to delete TEST_ROW2 as he is having write permission only on one
-    // version of the cells.
-    user2.runAs(new PrivilegedExceptionAction<Void>() {
-      @Override
-      public Void run() throws Exception {
-        HTable t = new HTable(conf, TEST_TABLE.getTableName());
-        try {
-          Delete d = new Delete(TEST_ROW2);
-          d.deleteColumns(TEST_FAMILY, TEST_Q1);
-          d.deleteColumns(TEST_FAMILY, TEST_Q2);
-          t.delete(d);
-          fail("user2 should not be allowed to delete the row");
-        } catch (Exception e) {
+    };
 
-        } finally {
-          t.close();
-        }
-        return null;
-      }
-    });
-    // user1 should be allowed to delete the cf. (All data under cf for a row)
-    user1.runAs(new PrivilegedExceptionAction<Void>() {
+    verifyDenied(incrementQ1, USER_OTHER);
+    verifyDenied(incrementQ3, USER_OTHER);
+
+    // We should be able to increment Q2 twice, the previous ACL will be
+    // carried forward
+    verifyAllowed(incrementQ2, USER_OTHER);
+    verifyAllowed(incrementQ2newDenyACL, USER_OTHER);
+    // But not again after we denied ourselves write permission with an ACL
+    // update
+    verifyDenied(incrementQ2, USER_OTHER);
+
+    /* ---- Deletes ---- */
+
+    AccessTestAction deleteFamily = new AccessTestAction() {
       @Override
-      public Void run() throws Exception {
+      public Object run() throws Exception {
+        Delete delete = new Delete(TEST_ROW).deleteFamily(TEST_FAMILY);
         HTable t = new HTable(conf, TEST_TABLE.getTableName());
         try {
-          Delete d = new Delete(TEST_ROW2);
-          d.deleteFamily(TEST_FAMILY);
-          t.delete(d);
+          t.delete(delete);
         } finally {
           t.close();
         }
         return null;
       }
-    });
+    };
+
+    AccessTestAction deleteQ1 = new AccessTestAction() {
+      @Override
+      public Object run() throws Exception {
+        Delete delete = new Delete(TEST_ROW).deleteColumn(TEST_FAMILY, TEST_Q1);
+        HTable t = new HTable(conf, TEST_TABLE.getTableName());
+        try {
+          t.delete(delete);
+        } finally {
+          t.close();
+        }
+        return null;
+      }
+    };
+
+    verifyDenied(deleteFamily, USER_OTHER);
+    verifyDenied(deleteQ1, USER_OTHER);
+    verifyAllowed(deleteQ1, USER_OWNER);
   }
 
   @After
