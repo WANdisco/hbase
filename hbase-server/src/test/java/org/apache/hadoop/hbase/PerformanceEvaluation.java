@@ -43,7 +43,6 @@ import com.yammer.metrics.core.MetricsRegistry;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.apache.commons.math.stat.descriptive.DescriptiveStatistics;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.Configured;
 import org.apache.hadoop.fs.FileSystem;
@@ -117,7 +116,6 @@ public class PerformanceEvaluation extends Configured implements Tool {
   private static final MathContext CXT = MathContext.DECIMAL64;
   private static final BigDecimal MS_PER_SEC = BigDecimal.valueOf(1000);
   private static final BigDecimal BYTES_PER_MB = BigDecimal.valueOf(1024 * 1024);
-  private static final TestOptions DEFAULT_OPTS = new TestOptions();
 
   protected Map<String, CmdDescriptor> commands = new TreeMap<String, CmdDescriptor>();
 
@@ -237,7 +235,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
       Configuration conf = HBaseConfiguration.create(context.getConfiguration());
 
       // Evaluation task
-      long elapsedTime = this.pe.runOneClient(this.cmd, conf, opts, status);
+      long elapsedTime = runOneClient(this.cmd, conf, opts, status);
       // Collect how much time the thing took. Report as map output and
       // to the ELAPSED_TIME counter.
       context.getCounter(Counter.ELAPSED_TIME).increment(elapsedTime);
@@ -353,8 +351,8 @@ public class PerformanceEvaluation extends Configured implements Tool {
              + Arrays.toString(timings));
     Arrays.sort(timings);
     long total = 0;
-    for (int i = 0; i < timings.length; i++) {
-      total += timings[i];
+    for (long timing : timings) {
+      total += timing;
     }
     LOG.info("[" + test + "]"
              + "\tMin: " + timings[0] + "ms"
@@ -488,10 +486,12 @@ public class PerformanceEvaluation extends Configured implements Tool {
       this.perClientRunRows = that.perClientRunRows;
       this.numClientThreads = that.numClientThreads;
       this.totalRows = that.totalRows;
+      this.modulo = that.modulo;
       this.sampleRate = that.sampleRate;
       this.tableName = that.tableName;
       this.flushCommits = that.flushCommits;
       this.writeToWAL = that.writeToWAL;
+      this.autoFlush = that.autoFlush;
       this.useTags = that.useTags;
       this.noOfTags = that.noOfTags;
       this.reportLatency = that.reportLatency;
@@ -507,10 +507,12 @@ public class PerformanceEvaluation extends Configured implements Tool {
     public int perClientRunRows = ROWS_PER_GB;
     public int numClientThreads = 1;
     public int totalRows = ROWS_PER_GB;
+    public int modulo = -1;
     public float sampleRate = 1.0f;
     public String tableName = TABLE_NAME;
     public boolean flushCommits = true;
     public boolean writeToWAL = true;
+    public boolean autoFlush = false;
     public boolean useTags = false;
     public int noOfTags = 1;
     public boolean reportLatency = false;
@@ -572,7 +574,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
     void testSetup() throws IOException {
       this.connection = HConnectionManager.createConnection(conf);
       this.table = connection.getTable(opts.tableName);
-      this.table.setAutoFlush(false, true);
+      this.table.setAutoFlush(opts.autoFlush, true);
       String metricName =
           testName + "-Client-" + Thread.currentThread().getName() + "-testRowTime";
       latency =
@@ -613,9 +615,9 @@ public class PerformanceEvaluation extends Configured implements Tool {
       // Report on completion of 1/10th of total.
       for (int i = opts.startRow; i < lastRow; i++) {
         if (i % everyN != 0) continue;
-        long startTime = System.currentTimeMillis();
+        long startTime = System.nanoTime();
         testRow(i);
-        latency.update(System.currentTimeMillis() - startTime);
+        latency.update((System.nanoTime() - startTime) / 100000);
         if (status != null && i > 0 && (i % getReportingPeriod()) == 0) {
           status.setStatus(generateStatus(opts.startRow, i, lastRow));
         }
@@ -627,14 +629,16 @@ public class PerformanceEvaluation extends Configured implements Tool {
      */
     private void reportLatency() throws IOException {
       status.setStatus(testName + " latency log (ms), on " + latency.count() + " measures");
-      status.setStatus(testName + " Min    = " + latency.min());
-      status.setStatus(testName + " Avg    = " + latency.mean());
-      status.setStatus(testName + " StdDev = " + latency.stdDev());
-      status.setStatus(testName + " 50th   = " + latency.getSnapshot().getMedian());
-      status.setStatus(testName + " 95th   = " + latency.getSnapshot().get95thPercentile());
-      status.setStatus(testName + " 99th   = " + latency.getSnapshot().get99thPercentile());
-      status.setStatus(testName + " 99.9th = " + latency.getSnapshot().get999thPercentile());
-      status.setStatus(testName + " Max    = " + latency.max());
+      status.setStatus(testName + " Min      = " + latency.min());
+      status.setStatus(testName + " Avg      = " + latency.mean());
+      status.setStatus(testName + " StdDev   = " + latency.stdDev());
+      status.setStatus(testName + " 50th     = " + latency.getSnapshot().getMedian());
+      status.setStatus(testName + " 95th     = " + latency.getSnapshot().get95thPercentile());
+      status.setStatus(testName + " 99th     = " + latency.getSnapshot().get99thPercentile());
+      status.setStatus(testName + " 99.9th   = " + latency.getSnapshot().get999thPercentile());
+      status.setStatus(testName + " 99.99th  = " + latency.getSnapshot().getValue(0.9999));
+      status.setStatus(testName + " 99.9999th= " + latency.getSnapshot().getValue(0.99999));
+      status.setStatus(testName + " Max      = " + latency.max());
     }
 
     /*
@@ -653,7 +657,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
 
     @Override
     void testRow(final int i) throws IOException {
-      Scan scan = new Scan(getRandomRow(this.rand, opts.totalRows));
+      Scan scan = new Scan(getRandomRow(this.rand, opts.modulo));
       scan.addColumn(FAMILY_NAME, QUALIFIER_NAME);
       scan.setFilter(new WhileMatchFilter(new PageFilter(120)));
       ResultScanner s = this.table.getScanner(scan);
@@ -682,7 +686,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
       scan.addColumn(FAMILY_NAME, QUALIFIER_NAME);
       ResultScanner s = this.table.getScanner(scan);
       int count = 0;
-      for (Result rr; (rr = s.next()) != null;) {
+      while (s.next() != null) {
         count++;
       }
 
@@ -756,7 +760,6 @@ public class PerformanceEvaluation extends Configured implements Tool {
 
   static class RandomReadTest extends Test {
     private ArrayList<Get> gets;
-    int idx = 0;
 
     RandomReadTest(Configuration conf, TestOptions options, Status status) {
       super(conf, options, status);
@@ -768,8 +771,9 @@ public class PerformanceEvaluation extends Configured implements Tool {
 
     @Override
     void testRow(final int i) throws IOException {
-      Get get = new Get(getRandomRow(this.rand, opts.totalRows));
+      Get get = new Get(getRandomRow(this.rand, opts.modulo));
       get.addColumn(FAMILY_NAME, QUALIFIER_NAME);
+      if (LOG.isTraceEnabled()) LOG.trace(get.toString());
       if (opts.multiGet > 0) {
         this.gets.add(get);
         if (this.gets.size() == opts.multiGet) {
@@ -804,7 +808,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
 
     @Override
     void testRow(final int i) throws IOException {
-      byte[] row = getRandomRow(this.rand, opts.totalRows);
+      byte[] row = getRandomRow(this.rand, opts.modulo);
       Put put = new Put(row);
       byte[] value = generateData(this.rand, VALUE_LENGTH);
       if (opts.useTags) {
@@ -970,7 +974,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
    */
   public static byte[] generateData(final Random r, int length) {
     byte [] b = new byte [length];
-    int i = 0;
+    int i;
 
     for(i = 0; i < (length-8); i += 8) {
       b[i] = (byte) (65 + r.nextInt(26));
@@ -990,8 +994,8 @@ public class PerformanceEvaluation extends Configured implements Tool {
     return b;
   }
 
-  static byte [] getRandomRow(final Random random, final int totalRows) {
-    return format(random.nextInt(Integer.MAX_VALUE) % totalRows);
+  static byte [] getRandomRow(final Random random, final int modulo) {
+    return format(random.nextInt(Integer.MAX_VALUE) % modulo);
   }
 
   static long runOneClient(final Class<? extends Test> cmd, Configuration conf, TestOptions opts,
@@ -999,7 +1003,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
       throws IOException {
     status.setStatus("Start " + cmd + " at offset " + opts.startRow + " for " +
       opts.perClientRunRows + " rows");
-    long totalElapsedTime = 0;
+    long totalElapsedTime;
 
     final Test t;
     try {
@@ -1055,6 +1059,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
     System.err.println(" nomapred        Run multiple clients using threads " +
       "(rather than use mapreduce)");
     System.err.println(" rows            Rows each client runs. Default: One million");
+    System.err.println(" modulo          Modulo we use dividing random. Default: Clients x rows");
     System.err.println(" sampleRate      Execute test on a sample of total " +
       "rows. Only supported by randomRead. Default: 1.0");
     System.err.println(" table           Alternate table name. Default: 'TestTable'");
@@ -1062,6 +1067,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
     System.err.println(" flushCommits    Used to determine if the test should flush the table. " +
       "Default: false");
     System.err.println(" writeToWAL      Set writeToWAL on puts. Default: True");
+    System.err.println(" autoFlush       Set autoFlush on htable. Default: False");
     System.err.println(" presplit        Create presplit table. Recommended for accurate perf " +
       "analysis (see guide).  Default: disabled");
     System.err.println(" inmemory        Tries to keep the HFiles of the CF " +
@@ -1071,8 +1077,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
       "Default: false");
     System.err.println(" numoftags       Specify the no of tags that would be needed. " +
        "This works only if usetags is true.");
-    System.err.println(" latency         Set to report operation latencies. " +
-      "Currently only supported by randomRead test. Default: False");
+    System.err.println(" latency         Set to report operation latencies. Default: False");
     System.err.println();
     System.err.println(" Note: -D properties will be applied to the conf used. ");
     System.err.println("  For example: ");
@@ -1179,6 +1184,12 @@ public class PerformanceEvaluation extends Configured implements Tool {
           continue;
         }
 
+        final String autoFlush = "--autoFlush=";
+        if (cmd.startsWith(autoFlush)) {
+          opts.autoFlush = Boolean.parseBoolean(cmd.substring(autoFlush.length()));
+          continue;
+        }
+
         final String presplit = "--presplit=";
         if (cmd.startsWith(presplit)) {
           opts.presplitRegions = Integer.parseInt(cmd.substring(presplit.length()));
@@ -1215,11 +1226,18 @@ public class PerformanceEvaluation extends Configured implements Tool {
           continue;
         }
 
+        final String modulo = "--modulo=";
+        if (cmd.startsWith(modulo)) {
+          opts.modulo = Integer.parseInt(cmd.substring(modulo.length()));
+          continue;
+        }
+
         Class<? extends Test> cmdClass = determineCommandClass(cmd);
         if (cmdClass != null) {
           opts.numClientThreads = getNumClients(i + 1, args);
           // number of rows specified
           opts.totalRows = opts.perClientRunRows * opts.numClientThreads;
+          if (opts.modulo == -1) opts.modulo = opts.totalRows;
           runTest(cmdClass, opts);
           errCode = 0;
           break;
