@@ -59,12 +59,14 @@ public class ScannerResultGenerator extends ResultGenerator {
   private Result cached;
 
   public ScannerResultGenerator(final String tableName, final RowSpec rowspec,
-      final Filter filter) throws IllegalArgumentException, IOException {
-    this(tableName, rowspec, filter, -1);
+      final Filter filter, final boolean cacheBlocks)
+      throws IllegalArgumentException, IOException {
+    this(tableName, rowspec, filter, -1, cacheBlocks);
   }
 
   public ScannerResultGenerator(final String tableName, final RowSpec rowspec,
-      final Filter filter, final int caching) throws IllegalArgumentException, IOException {
+      final Filter filter, final int caching, final boolean cacheBlocks)
+      throws IllegalArgumentException, IOException {
     HTableInterface table = RESTServlet.getInstance().getTable(tableName);
     try {
       Scan scan;
@@ -91,12 +93,11 @@ public class ScannerResultGenerator extends ResultGenerator {
       if (filter != null) {
         scan.setFilter(filter);
       }
-      // always disable block caching on the cluster when scanning
-      scan.setCacheBlocks(false);
       if (caching > 0 ) {
         scan.setCaching(caching);
       }
-      if(rowspec.hasLabels()) {
+      scan.setCacheBlocks(cacheBlocks);
+      if (rowspec.hasLabels()) {
         scan.setAuthorizations(new Authorizations(rowspec.getLabels()));
       }
       scanner = table.getScanner(scan);
