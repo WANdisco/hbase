@@ -1,5 +1,4 @@
 /**
- *
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -16,32 +15,41 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.apache.hadoop.hbase.master;
+package org.apache.hadoop.hbase.security.visibility;
 
-import java.util.concurrent.Callable;
+import java.util.ArrayList;
+import java.util.List;
 
 import org.apache.hadoop.classification.InterfaceAudience;
-import org.apache.hadoop.hbase.HRegionInfo;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hbase.security.User;
 
-/**
- * A callable object that invokes the corresponding action that needs to be
- * taken for unassignment of a region in transition. Implementing as future
- * callable we are able to act on the timeout asynchronously.
- */
+// Strictly removes a specified label
 @InterfaceAudience.Private
-public class UnAssignCallable implements Callable<Object> {
-  private AssignmentManager assignmentManager;
+public class LabelFilteringScanLabelGenerator implements ScanLabelGenerator {
 
-  private HRegionInfo hri;
+  public static String labelToFilter = null;
 
-  public UnAssignCallable(AssignmentManager assignmentManager, HRegionInfo hri) {
-    this.assignmentManager = assignmentManager;
-    this.hri = hri;
+  @Override
+  public Configuration getConf() {
+    return null;
   }
 
   @Override
-  public Object call() throws Exception {
-    assignmentManager.unassign(hri, true);
+  public void setConf(Configuration conf) {
+
+  }
+
+  @Override
+  public List<String> getLabels(User user, Authorizations authorizations) {
+    if (authorizations != null) {
+      if (labelToFilter == null) return authorizations.getLabels();
+      List<String> newAuths = new ArrayList<String>();
+      for (String auth : authorizations.getLabels()) {
+        if (!labelToFilter.equals(auth)) newAuths.add(auth);
+      }
+      return newAuths;
+    }
     return null;
   }
 }
