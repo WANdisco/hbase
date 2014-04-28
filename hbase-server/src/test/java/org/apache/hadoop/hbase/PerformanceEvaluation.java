@@ -83,7 +83,8 @@ import org.codehaus.jackson.map.ObjectMapper;
 
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import com.yammer.metrics.core.Histogram;
-import com.yammer.metrics.core.MetricsRegistry;
+import com.yammer.metrics.stats.UniformSample;
+import com.yammer.metrics.stats.Snapshot;
 
 /**
  * Script used evaluating HBase performance and scalability.  Runs a HBase
@@ -118,6 +119,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
   private static final MathContext CXT = MathContext.DECIMAL64;
   private static final BigDecimal MS_PER_SEC = BigDecimal.valueOf(1000);
   private static final BigDecimal BYTES_PER_MB = BigDecimal.valueOf(1024 * 1024);
+  private static final TestOptions DEFAULT_OPTS = new TestOptions();
 
   protected Map<String, CmdDescriptor> commands = new TreeMap<String, CmdDescriptor>();
 
@@ -197,7 +199,6 @@ public class PerformanceEvaluation extends Configured implements Tool {
     public static final String PE_KEY = "EvaluationMapTask.performanceEvalImpl";
 
     private Class<? extends Test> cmd;
-    private PerformanceEvaluation pe;
 
     @Override
     protected void setup(Context context) throws IOException, InterruptedException {
@@ -208,8 +209,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
       Class<? extends PerformanceEvaluation> peClass =
           forName(context.getConfiguration().get(PE_KEY), PerformanceEvaluation.class);
       try {
-        this.pe = peClass.getConstructor(Configuration.class)
-            .newInstance(context.getConfiguration());
+        peClass.getConstructor(Configuration.class).newInstance(context.getConfiguration());
       } catch (Exception e) {
         throw new IllegalStateException("Could not instantiate PE instance", e);
       }
@@ -283,7 +283,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
    * Create an HTableDescriptor from provided TestOptions.
    */
   protected static HTableDescriptor getTableDescriptor(TestOptions opts) {
-    HTableDescriptor desc = new HTableDescriptor(opts.tableName);
+    HTableDescriptor desc = new HTableDescriptor(TableName.valueOf(opts.tableName));
     HColumnDescriptor family = new HColumnDescriptor(FAMILY_NAME);
     family.setDataBlockEncoding(opts.blockEncoding);
     family.setCompressionType(opts.compression);
@@ -485,6 +485,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
     public TestOptions(TestOptions that) {
       this.nomapred = that.nomapred;
       this.startRow = that.startRow;
+      this.size = that.size;
       this.perClientRunRows = that.perClientRunRows;
       this.numClientThreads = that.numClientThreads;
       this.totalRows = that.totalRows;
@@ -508,6 +509,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
     public boolean nomapred = false;
     public boolean filterAll = false;
     public int startRow = 0;
+    public float size = 1.0f;
     public int perClientRunRows = ROWS_PER_GB;
     public int numClientThreads = 1;
     public int totalRows = ROWS_PER_GB;
@@ -535,7 +537,6 @@ public class PerformanceEvaluation extends Configured implements Tool {
     // Below is make it so when Tests are all running in the one
     // jvm, that they each have a differently seeded Random.
     private static final Random randomSeed = new Random(System.currentTimeMillis());
-    private static final MetricsRegistry metricsRegistry = new MetricsRegistry();
 
     private static long nextRandomSeed() {
       return randomSeed.nextLong();
@@ -567,7 +568,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
     }
 
     private String generateStatus(final int sr, final int i, final int lr) {
-      return sr + "/" + i + "/" + lr;
+      return sr + "/" + i + "/" + lr + " " + getShortLatencyReport();
     }
 
     protected int getReportingPeriod() {
@@ -579,10 +580,16 @@ public class PerformanceEvaluation extends Configured implements Tool {
       this.connection = HConnectionManager.createConnection(conf);
       this.table = connection.getTable(opts.tableName);
       this.table.setAutoFlush(opts.autoFlush, true);
-      String metricName =
-          testName + "-Client-" + Thread.currentThread().getName() + "-testRowTime";
-      latency =
-          metricsRegistry.newHistogram(PerformanceEvaluation.class, metricName);
+
+      try {
+        Constructor<?> ctor =
+            Histogram.class.getDeclaredConstructor(com.yammer.metrics.stats.Sample.class);
+        ctor.setAccessible(true);
+        latency = (Histogram) ctor.newInstance(new UniformSample(1024 * 500));
+      } catch (Exception e) {
+        throw new RuntimeException(e);
+      }
+
     }
 
     void testTakedown() throws IOException {
@@ -634,16 +641,33 @@ public class PerformanceEvaluation extends Configured implements Tool {
     private void reportLatency() throws IOException {
       status.setStatus(testName + " latency log (microseconds), on " +
           latency.count() + " measures");
+      Snapshot sn = latency.getSnapshot();
       status.setStatus(testName + " Min      = " + latency.min());
       status.setStatus(testName + " Avg      = " + latency.mean());
       status.setStatus(testName + " StdDev   = " + latency.stdDev());
-      status.setStatus(testName + " 50th     = " + latency.getSnapshot().getMedian());
-      status.setStatus(testName + " 95th     = " + latency.getSnapshot().get95thPercentile());
-      status.setStatus(testName + " 99th     = " + latency.getSnapshot().get99thPercentile());
-      status.setStatus(testName + " 99.9th   = " + latency.getSnapshot().get999thPercentile());
-      status.setStatus(testName + " 99.99th  = " + latency.getSnapshot().getValue(0.9999));
-      status.setStatus(testName + " 99.9999th= " + latency.getSnapshot().getValue(0.99999));
+      status.setStatus(testName + " 50th     = " + sn.getMedian());
+      status.setStatus(testName + " 95th     = " + sn.get95thPercentile());
+      status.setStatus(testName + " 99th     = " + sn.get99thPercentile());
+      status.setStatus(testName + " 99.9th   = " + sn.get999thPercentile());
+      status.setStatus(testName + " 99.99th  = " + sn.getValue(0.9999));
+      status.setStatus(testName + " 99.999th = " + sn.getValue(0.99999));
       status.setStatus(testName + " Max      = " + latency.max());
+    }
+
+    /**
+     * Used formating doubles so only two places after decimal point.
+     */
+    private static DecimalFormat DOUBLE_FORMAT = new DecimalFormat("#0.00");
+
+    /**
+     * @return Subset of the histograms' calculation.
+     */
+    private String getShortLatencyReport() {
+      Snapshot sn = latency.getSnapshot();
+      return "Mean=" + DOUBLE_FORMAT.format(latency.mean()) +
+        ", StdDev=" + DOUBLE_FORMAT.format(latency.stdDev()) +
+        ", 95th=" + DOUBLE_FORMAT.format(sn.get95thPercentile()) +
+        ", 99th=" + DOUBLE_FORMAT.format(sn.get99thPercentile());
     }
 
     /*
@@ -683,7 +707,6 @@ public class PerformanceEvaluation extends Configured implements Tool {
 
   }
 
-  @SuppressWarnings("unused")
   static abstract class RandomScanWithRangeTest extends Test {
     RandomScanWithRangeTest(Configuration conf, TestOptions options, Status status) {
       super(conf, options, status);
@@ -1086,6 +1109,8 @@ public class PerformanceEvaluation extends Configured implements Tool {
     System.err.println(" nomapred        Run multiple clients using threads " +
       "(rather than use mapreduce)");
     System.err.println(" rows            Rows each client runs. Default: One million");
+    System.err.println(" size            Total size in GiB. Mutually exclusive with --rows. " +
+      "Default: 1.0.");
     System.err.println(" modulo          Modulo we use dividing random. Default: Clients x rows");
     System.err.println(" sampleRate      Execute test on a sample of total " +
       "rows. Only supported by randomRead. Default: 1.0");
@@ -1268,12 +1293,29 @@ public class PerformanceEvaluation extends Configured implements Tool {
           continue;
         }
 
+        final String size = "--size=";
+        if (cmd.startsWith(size)) {
+          opts.size = Float.parseFloat(cmd.substring(size.length()));
+          continue;
+        }
+
         Class<? extends Test> cmdClass = determineCommandClass(cmd);
         if (cmdClass != null) {
           opts.numClientThreads = getNumClients(i + 1, args);
-          // number of rows specified
-          opts.totalRows = opts.perClientRunRows * opts.numClientThreads;
-          if (opts.modulo == -1) opts.modulo = opts.totalRows;
+          if (opts.size != DEFAULT_OPTS.size &&
+            opts.perClientRunRows != DEFAULT_OPTS.perClientRunRows) {
+            throw new IllegalArgumentException(rows + " and " + size + " are mutually exclusive arguments.");
+          }
+          if (opts.size != DEFAULT_OPTS.size) {
+            // total size in GB specified
+            opts.totalRows = (int) opts.size * ROWS_PER_GB;
+            opts.perClientRunRows = opts.totalRows / opts.numClientThreads;
+          } else if (opts.perClientRunRows != DEFAULT_OPTS.perClientRunRows) {
+            // number of rows specified
+            opts.totalRows = opts.perClientRunRows * opts.numClientThreads;
+            opts.size = opts.totalRows / ROWS_PER_GB;
+          }
+          if (opts.modulo == DEFAULT_OPTS.modulo) opts.modulo = opts.totalRows;
           runTest(cmdClass, opts);
           errCode = 0;
           break;
