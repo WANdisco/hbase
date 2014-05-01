@@ -66,6 +66,7 @@ import org.apache.hadoop.hbase.filter.WhileMatchFilter;
 import org.apache.hadoop.hbase.io.compress.Compression;
 import org.apache.hadoop.hbase.io.encoding.DataBlockEncoding;
 import org.apache.hadoop.hbase.mapreduce.TableMapReduceUtil;
+import org.apache.hadoop.hbase.trace.SpanReceiverHost;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.Hash;
 import org.apache.hadoop.hbase.util.MurmurHash;
@@ -85,6 +86,10 @@ import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import com.yammer.metrics.core.Histogram;
 import com.yammer.metrics.stats.UniformSample;
 import com.yammer.metrics.stats.Snapshot;
+import org.htrace.Sampler;
+import org.htrace.Trace;
+import org.htrace.TraceScope;
+import org.htrace.impl.ProbabilitySampler;
 
 /**
  * Script used evaluating HBase performance and scalability.  Runs a HBase
@@ -489,8 +494,8 @@ public class PerformanceEvaluation extends Configured implements Tool {
       this.perClientRunRows = that.perClientRunRows;
       this.numClientThreads = that.numClientThreads;
       this.totalRows = that.totalRows;
-      this.modulo = that.modulo;
       this.sampleRate = that.sampleRate;
+      this.traceRate = that.traceRate;
       this.tableName = that.tableName;
       this.flushCommits = that.flushCommits;
       this.writeToWAL = that.writeToWAL;
@@ -513,8 +518,8 @@ public class PerformanceEvaluation extends Configured implements Tool {
     public int perClientRunRows = ROWS_PER_GB;
     public int numClientThreads = 1;
     public int totalRows = ROWS_PER_GB;
-    public int modulo = -1;
     public float sampleRate = 1.0f;
+    public double traceRate = 0.0;
     public String tableName = TABLE_NAME;
     public boolean flushCommits = true;
     public boolean writeToWAL = true;
@@ -523,8 +528,8 @@ public class PerformanceEvaluation extends Configured implements Tool {
     public int noOfTags = 1;
     public boolean reportLatency = false;
     public int multiGet = 0;
-    boolean inMemoryCF = false;
-    int presplitRegions = 0;
+    public boolean inMemoryCF = false;
+    public int presplitRegions = 0;
     public Compression.Algorithm compression = Compression.Algorithm.NONE;
     public DataBlockEncoding blockEncoding = DataBlockEncoding.NONE;
   }
@@ -548,6 +553,8 @@ public class PerformanceEvaluation extends Configured implements Tool {
     protected final TestOptions opts;
 
     private final Status status;
+    private final Sampler<?> traceSampler;
+    private final SpanReceiverHost receiverHost;
     protected HConnection connection;
     protected HTableInterface table;
 
@@ -563,6 +570,14 @@ public class PerformanceEvaluation extends Configured implements Tool {
       this.opts = options;
       this.status = status;
       this.testName = this.getClass().getSimpleName();
+      receiverHost = SpanReceiverHost.getInstance(conf);
+      if (options.traceRate >= 1.0) {
+        this.traceSampler = Sampler.ALWAYS;
+      } else if (options.traceRate > 0.0) {
+        this.traceSampler = new ProbabilitySampler(options.traceRate);
+      } else {
+        this.traceSampler = Sampler.NEVER;
+      }
       everyN = (int) (opts.totalRows / (opts.totalRows * opts.sampleRate));
       LOG.info("Sampling 1 every " + everyN + " out of " + opts.perClientRunRows + " total rows.");
     }
@@ -599,6 +614,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
       }
       table.close();
       connection.close();
+      receiverHost.closeReceivers();
     }
 
     /*
@@ -627,7 +643,12 @@ public class PerformanceEvaluation extends Configured implements Tool {
       for (int i = opts.startRow; i < lastRow; i++) {
         if (i % everyN != 0) continue;
         long startTime = System.nanoTime();
-        testRow(i);
+        TraceScope scope = Trace.startSpan("test row", traceSampler);
+        try {
+          testRow(i);
+        } finally {
+          scope.close();
+        }
         latency.update((System.nanoTime() - startTime) / 1000);
         if (status != null && i > 0 && (i % getReportingPeriod()) == 0) {
           status.setStatus(generateStatus(opts.startRow, i, lastRow));
@@ -686,7 +707,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
 
     @Override
     void testRow(final int i) throws IOException {
-      Scan scan = new Scan(getRandomRow(this.rand, opts.modulo));
+      Scan scan = new Scan(getRandomRow(this.rand, opts.totalRows));
       FilterList list = new FilterList();
       scan.addColumn(FAMILY_NAME, QUALIFIER_NAME);
       if (opts.filterAll) {
@@ -807,7 +828,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
 
     @Override
     void testRow(final int i) throws IOException {
-      Get get = new Get(getRandomRow(this.rand, opts.modulo));
+      Get get = new Get(getRandomRow(this.rand, opts.totalRows));
       get.addColumn(FAMILY_NAME, QUALIFIER_NAME);
       if (opts.filterAll) {
         get.setFilter(new FilterAllFilter());
@@ -847,7 +868,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
 
     @Override
     void testRow(final int i) throws IOException {
-      byte[] row = getRandomRow(this.rand, opts.modulo);
+      byte[] row = getRandomRow(this.rand, opts.totalRows);
       Put put = new Put(row);
       byte[] value = generateData(this.rand, VALUE_LENGTH);
       if (opts.useTags) {
@@ -1044,8 +1065,8 @@ public class PerformanceEvaluation extends Configured implements Tool {
     return b;
   }
 
-  static byte [] getRandomRow(final Random random, final int modulo) {
-    return format(random.nextInt(Integer.MAX_VALUE) % modulo);
+  static byte [] getRandomRow(final Random random, final int totalRows) {
+    return format(random.nextInt(Integer.MAX_VALUE) % totalRows);
   }
 
   static long runOneClient(final Class<? extends Test> cmd, Configuration conf, TestOptions opts,
@@ -1111,9 +1132,10 @@ public class PerformanceEvaluation extends Configured implements Tool {
     System.err.println(" rows            Rows each client runs. Default: One million");
     System.err.println(" size            Total size in GiB. Mutually exclusive with --rows. " +
       "Default: 1.0.");
-    System.err.println(" modulo          Modulo we use dividing random. Default: Clients x rows");
     System.err.println(" sampleRate      Execute test on a sample of total " +
       "rows. Only supported by randomRead. Default: 1.0");
+    System.err.println(" traceRate       Enable HTrace spans. Initiate tracing every N rows. " +
+      "Default: 0");
     System.err.println(" table           Alternate table name. Default: 'TestTable'");
     System.err.println(" compress        Compression type to use (GZ, LZO, ...). Default: 'NONE'");
     System.err.println(" flushCommits    Used to determine if the test should flush the table. " +
@@ -1136,7 +1158,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
     System.err.println();
     System.err.println(" Note: -D properties will be applied to the conf used. ");
     System.err.println("  For example: ");
-    System.err.println("   -Dmapred.output.compress=true");
+    System.err.println("   -Dmapreduce.output.fileoutputformat.compress=true");
     System.err.println("   -Dmapreduce.task.timeout=60000");
     System.err.println();
     System.err.println("Command:");
@@ -1206,6 +1228,12 @@ public class PerformanceEvaluation extends Configured implements Tool {
         final String sampleRate = "--sampleRate=";
         if (cmd.startsWith(sampleRate)) {
           opts.sampleRate = Float.parseFloat(cmd.substring(sampleRate.length()));
+          continue;
+        }
+
+        final String traceRate = "--traceRate=";
+        if (cmd.startsWith(traceRate)) {
+          opts.traceRate = Double.parseDouble(cmd.substring(traceRate.length()));
           continue;
         }
 
@@ -1287,12 +1315,6 @@ public class PerformanceEvaluation extends Configured implements Tool {
           continue;
         }
 
-        final String modulo = "--modulo=";
-        if (cmd.startsWith(modulo)) {
-          opts.modulo = Integer.parseInt(cmd.substring(modulo.length()));
-          continue;
-        }
-
         final String size = "--size=";
         if (cmd.startsWith(size)) {
           opts.size = Float.parseFloat(cmd.substring(size.length()));
@@ -1315,7 +1337,6 @@ public class PerformanceEvaluation extends Configured implements Tool {
             opts.totalRows = opts.perClientRunRows * opts.numClientThreads;
             opts.size = opts.totalRows / ROWS_PER_GB;
           }
-          if (opts.modulo == DEFAULT_OPTS.modulo) opts.modulo = opts.totalRows;
           runTest(cmdClass, opts);
           errCode = 0;
           break;

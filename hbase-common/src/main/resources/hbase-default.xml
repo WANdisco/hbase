@@ -897,6 +897,15 @@ possible configurations would overwhelm and obscure the important.
     state.</description>
   </property>
   <property>
+    <name>hbase.table.max.rowsize</name>
+    <value>1073741824</value>
+    <description>
+      Maximum size of single row in bytes (default is 1 Gb) for Get'ting
+      or Scan'ning without in-row scan flag set. If row size exceeds this limit
+      RowTooBigException is thrown to client.
+    </description>
+  </property>
+  <property>
     <name>hbase.thrift.minWorkerThreads</name>
     <value>16</value>
     <description>The "core size" of the thread pool. New threads are created on every
@@ -1001,7 +1010,7 @@ possible configurations would overwhelm and obscure the important.
         the time it takes for the namenode to issue a block recovery command as part of
         datanode; dfs.heartbeat.interval and the time it takes for the primary
         datanode, performing block recovery to timeout on a dead datanode; usually
-        dfs.socket.timeout. See the end of HBASE-8389 for more.</description>
+        dfs.client.socket-timeout. See the end of HBASE-8389 for more.</description>
   </property>
   <property>
     <name>hbase.column.max.version</name>
@@ -1027,10 +1036,16 @@ possible configurations would overwhelm and obscure the important.
     <name>hbase.regionserver.checksum.verify</name>
     <value>true</value>
     <description>
-        If set to true, HBase will read data and then verify checksums for
-        hfile blocks. Checksum verification inside HDFS will be switched off.
-        If the hbase-checksum verification fails, then it will switch back to
-        using HDFS checksums.
+        If set to true (the default), HBase verifies the checksums for hfile
+        blocks. HBase writes checksums inline with the data when it writes out
+        hfiles. HDFS (as of this writing) writes checksums to a separate file
+        than the data file necessitating extra seeks.  Setting this flag saves
+        some on i/o.  Checksum verification by HDFS will be internally disabled
+        on hfile streams when this flag is set.  If the hbase-checksum verification
+        fails, we will switch back to using HDFS checksums (so do not disable HDFS
+        checksums!  And besides this feature applies to hfiles only, not to WALs).
+        If this parameter is set to false, then hbase will not verify any checksums,
+        instead it will depend on checksum verification being done in the HDFS client.  
     </description>
   </property>
   <property>
