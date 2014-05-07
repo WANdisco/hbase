@@ -1167,6 +1167,17 @@ public class AccessController extends BaseRegionObserver
                                   NamespaceDescriptor ns) throws IOException {
   }
 
+  @Override
+  public void preTableFlush(final ObserverContext<MasterCoprocessorEnvironment> ctx,
+      final TableName tableName) throws IOException {
+    requirePermission("flushTable", tableName, null, null, Action.ADMIN, Action.CREATE);
+  }
+
+  @Override
+  public void postTableFlush(final ObserverContext<MasterCoprocessorEnvironment> ctx,
+      final TableName tableName) throws IOException {
+  }
+
   /* ---- RegionObserver implementation ---- */
 
   @Override
@@ -1481,7 +1492,7 @@ public class AccessController extends BaseRegionObserver
       Action.READ, Action.WRITE);
     if (!authResult.isAllowed() && cellFeaturesEnabled && !compatibleEarlyTermination) {
       authResult.setAllowed(checkCoveringPermission(OpType.CHECK_AND_PUT, env, row, families,
-        HConstants.LATEST_TIMESTAMP, Action.READ, Action.WRITE));
+        HConstants.LATEST_TIMESTAMP, Action.READ));
       authResult.setReason("Covering cell set");
     }
     logResult(authResult);
@@ -1519,7 +1530,7 @@ public class AccessController extends BaseRegionObserver
       Action.READ, Action.WRITE);
     if (!authResult.isAllowed() && cellFeaturesEnabled && !compatibleEarlyTermination) {
       authResult.setAllowed(checkCoveringPermission(OpType.CHECK_AND_DELETE, env, row, families,
-        HConstants.LATEST_TIMESTAMP, Action.READ, Action.WRITE));
+        HConstants.LATEST_TIMESTAMP, Action.READ));
       authResult.setReason("Covering cell set");
     }
     logResult(authResult);
@@ -1593,7 +1604,7 @@ public class AccessController extends BaseRegionObserver
     AuthResult authResult = permissionGranted(OpType.INCREMENT, user, env, families,
       Action.WRITE);
     if (!authResult.isAllowed() && cellFeaturesEnabled && !compatibleEarlyTermination) {
-      authResult.setAllowed(checkCoveringPermission(OpType.APPEND, env, increment.getRow(),
+      authResult.setAllowed(checkCoveringPermission(OpType.INCREMENT, env, increment.getRow(),
         families, increment.getTimeRange().getMax(), Action.WRITE));
       authResult.setReason("Covering cell set");
     }
