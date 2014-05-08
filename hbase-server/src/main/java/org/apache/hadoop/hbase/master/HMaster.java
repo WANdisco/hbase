@@ -68,7 +68,7 @@ import org.apache.hadoop.hbase.client.MetaScanner;
 import org.apache.hadoop.hbase.client.MetaScanner.MetaScannerVisitor;
 import org.apache.hadoop.hbase.client.MetaScanner.MetaScannerVisitorBase;
 import org.apache.hadoop.hbase.client.Result;
-import org.apache.hadoop.hbase.consensus.ConsensusProvider;
+import org.apache.hadoop.hbase.ConsensusProvider;
 import org.apache.hadoop.hbase.coprocessor.CoprocessorHost;
 import org.apache.hadoop.hbase.exceptions.DeserializationException;
 import org.apache.hadoop.hbase.executor.ExecutorType;
@@ -91,6 +91,7 @@ import org.apache.hadoop.hbase.master.handler.ModifyTableHandler;
 import org.apache.hadoop.hbase.master.handler.TableAddFamilyHandler;
 import org.apache.hadoop.hbase.master.handler.TableDeleteFamilyHandler;
 import org.apache.hadoop.hbase.master.handler.TableModifyFamilyHandler;
+import org.apache.hadoop.hbase.master.handler.TruncateTableHandler;
 import org.apache.hadoop.hbase.master.snapshot.SnapshotManager;
 import org.apache.hadoop.hbase.monitoring.MemoryBoundedLogMessageBuffer;
 import org.apache.hadoop.hbase.monitoring.MonitoredTask;
@@ -1321,6 +1322,21 @@ public class HMaster extends HRegionServer implements MasterServices, Server {
     this.service.submit(new DeleteTableHandler(tableName, this, this).prepare());
     if (cpHost != null) {
       cpHost.postDeleteTable(tableName);
+    }
+  }
+
+  @Override
+  public void truncateTable(TableName tableName, boolean preserveSplits) throws IOException {
+    checkInitialized();
+    if (cpHost != null) {
+      cpHost.preTruncateTable(tableName);
+    }
+    LOG.info(getClientIdAuditPrefix() + " truncate " + tableName);
+    TruncateTableHandler handler = new TruncateTableHandler(tableName, this, this, preserveSplits);
+    handler.prepare();
+    handler.process();
+    if (cpHost != null) {
+      cpHost.postTruncateTable(tableName);
     }
   }
 
