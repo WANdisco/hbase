@@ -685,8 +685,10 @@ public final class ExportSnapshot extends Configured implements Tool {
    */
   @Override
   public int run(String[] args) throws IOException {
+    boolean verifyTarget = true;
     boolean verifyChecksum = true;
     String snapshotName = null;
+    String targetName = null;
     boolean overwrite = false;
     String filesGroup = null;
     String filesUser = null;
@@ -703,6 +705,8 @@ public final class ExportSnapshot extends Configured implements Tool {
       try {
         if (cmd.equals("-snapshot")) {
           snapshotName = args[++i];
+        } else if (cmd.equals("-target")) {
+          targetName = args[++i];
         } else if (cmd.equals("-copy-to")) {
           outputRoot = new Path(args[++i]);
         } else if (cmd.equals("-copy-from")) {
@@ -712,6 +716,8 @@ public final class ExportSnapshot extends Configured implements Tool {
           FSUtils.setRootDir(conf, sourceDir);
         } else if (cmd.equals("-no-checksum-verify")) {
           verifyChecksum = false;
+        } else if (cmd.equals("-no-target-verify")) {
+          verifyTarget = false;
         } else if (cmd.equals("-mappers")) {
           mappers = Integer.parseInt(args[++i]);
         } else if (cmd.equals("-chuser")) {
@@ -746,6 +752,10 @@ public final class ExportSnapshot extends Configured implements Tool {
       printUsageAndExit();
     }
 
+    if (targetName == null) {
+      targetName = snapshotName;
+    }
+
     Path inputRoot = FSUtils.getRootDir(conf);
     FileSystem inputFs = FileSystem.get(inputRoot.toUri(), conf);
     LOG.debug("inputFs=" + inputFs.getUri().toString() + " inputRoot=" + inputRoot);
@@ -755,8 +765,8 @@ public final class ExportSnapshot extends Configured implements Tool {
     boolean skipTmp = conf.getBoolean(CONF_SKIP_TMP, false);
 
     Path snapshotDir = SnapshotDescriptionUtils.getCompletedSnapshotDir(snapshotName, inputRoot);
-    Path snapshotTmpDir = SnapshotDescriptionUtils.getWorkingSnapshotDir(snapshotName, outputRoot);
-    Path outputSnapshotDir = SnapshotDescriptionUtils.getCompletedSnapshotDir(snapshotName, outputRoot);
+    Path snapshotTmpDir = SnapshotDescriptionUtils.getWorkingSnapshotDir(targetName, outputRoot);
+    Path outputSnapshotDir = SnapshotDescriptionUtils.getCompletedSnapshotDir(targetName, outputRoot);
     Path initialOutputSnapshotDir = skipTmp ? outputSnapshotDir : snapshotTmpDir;
 
     // Check if the snapshot already exists
@@ -767,7 +777,7 @@ public final class ExportSnapshot extends Configured implements Tool {
           return 1;
         }
       } else {
-        System.err.println("The snapshot '" + snapshotName +
+        System.err.println("The snapshot '" + targetName +
           "' already exists in the destination: " + outputSnapshotDir);
         return 1;
       }
@@ -782,7 +792,7 @@ public final class ExportSnapshot extends Configured implements Tool {
             return 1;
           }
         } else {
-          System.err.println("A snapshot with the same name '"+snapshotName+"' may be in-progress");
+          System.err.println("A snapshot with the same name '"+ targetName +"' may be in-progress");
           System.err.println("Please check "+snapshotTmpDir+". If the snapshot has completed, ");
           System.err.println("consider removing "+snapshotTmpDir+" by using the -overwrite option");
           return 1;
@@ -809,6 +819,16 @@ public final class ExportSnapshot extends Configured implements Tool {
         snapshotDir + " to=" + initialOutputSnapshotDir, e);
     }
 
+    // Write a new .snapshotinfo if the target name is different from the source name
+    if (!targetName.equals(snapshotName)) {
+      SnapshotDescription snapshotDesc =
+        SnapshotDescriptionUtils.readSnapshotInfo(inputFs, snapshotDir)
+          .toBuilder()
+          .setName(targetName)
+          .build();
+      SnapshotDescriptionUtils.writeSnapshotInfo(snapshotDesc, snapshotTmpDir, outputFs);
+    }
+
     // Step 2 - Start MR Job to copy files
     // The snapshot references must be copied before the files otherwise the files gets removed
     // by the HFileArchiver, since they have no references.
@@ -830,11 +850,13 @@ public final class ExportSnapshot extends Configured implements Tool {
         }
       }
 
-      // Step 4 - Verify snapshot validity
-      LOG.info("Verify snapshot validity");
-      verifySnapshot(conf, outputFs, outputRoot, outputSnapshotDir);
+      // Step 4 - Verify snapshot integrity
+      if (verifyTarget) {
+        LOG.info("Verify snapshot integrity");
+        verifySnapshot(conf, outputFs, outputRoot, outputSnapshotDir);
+      }
 
-      LOG.info("Export Completed: " + snapshotName);
+      LOG.info("Export Completed: " + targetName);
       return 0;
     } catch (Exception e) {
       LOG.error("Snapshot export failed", e);
@@ -854,7 +876,9 @@ public final class ExportSnapshot extends Configured implements Tool {
     System.err.println("  -snapshot NAME          Snapshot to restore.");
     System.err.println("  -copy-to NAME           Remote destination hdfs://");
     System.err.println("  -copy-from NAME         Input folder hdfs:// (default hbase.rootdir)");
-    System.err.println("  -no-checksum-verify     Do not verify checksum.");
+    System.err.println("  -no-checksum-verify     Do not verify checksum, use name+length only.");
+    System.err.println("  -no-target-verify       Do not verify the integrity of the \\" +
+        "exported snapshot.");
     System.err.println("  -overwrite              Rewrite the snapshot manifest if already exists");
     System.err.println("  -chuser USERNAME        Change the owner of the files " +
         "to the specified one.");
