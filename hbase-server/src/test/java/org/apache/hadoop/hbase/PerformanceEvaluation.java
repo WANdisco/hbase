@@ -1065,6 +1065,15 @@ public class PerformanceEvaluation extends Configured implements Tool {
     return b;
   }
 
+  /**
+   * @deprecated Use {@link #generateData(java.util.Random, int)} instead.
+   * @return Generated random value to insert into a table cell.
+   */
+  @Deprecated
+  public static byte[] generateValue(final Random r) {
+    return generateData(r, VALUE_LENGTH);
+  }
+
   static byte [] getRandomRow(final Random random, final int totalRows) {
     return format(random.nextInt(Integer.MAX_VALUE) % totalRows);
   }
@@ -1137,6 +1146,8 @@ public class PerformanceEvaluation extends Configured implements Tool {
     System.err.println(" traceRate       Enable HTrace spans. Initiate tracing every N rows. " +
       "Default: 0");
     System.err.println(" table           Alternate table name. Default: 'TestTable'");
+    System.err.println(" multiGet        If >0, when doing RandomRead, perform multiple gets " +
+      "instead of single gets. Default: 0");
     System.err.println(" compress        Compression type to use (GZ, LZO, ...). Default: 'NONE'");
     System.err.println(" flushCommits    Used to determine if the test should flush the table. " +
       "Default: false");
