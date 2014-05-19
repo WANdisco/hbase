@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -15,24 +15,29 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package org.apache.hadoop.hbase.regionserver;
 
-package org.apache.hadoop.hbase.util.bytes;
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.HBaseIOException;
 
-import junit.framework.Assert;
+@InterfaceAudience.Private
+public class UnexpectedStateException extends HBaseIOException {
 
-import org.apache.hadoop.hbase.SmallTests;
-import org.apache.hadoop.hbase.util.ByteRange;
-import org.apache.hadoop.hbase.util.SimpleByteRange;
-import org.junit.Test;
-import org.junit.experimental.categories.Category;
+  private static final long serialVersionUID = -6727953144066746071L;
 
-@Category(SmallTests.class)
-public class TestByteRange {
-
-  @Test
-  public void testConstructor() {
-    ByteRange b = new SimpleByteRange(new byte[] { 0, 1, 2 });
-    Assert.assertEquals(3, b.getLength());
+  public UnexpectedStateException() {
+    super();
   }
 
+  public UnexpectedStateException(String message) {
+    super(message);
+  }
+
+  public UnexpectedStateException(String message, Throwable cause) {
+    super(message, cause);
+  }
+
+  public UnexpectedStateException(Throwable cause) {
+    super(cause);
+  }
 }
