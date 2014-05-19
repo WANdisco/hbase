@@ -39,6 +39,8 @@ import org.apache.hadoop.hbase.protobuf.generated.HBaseProtos.ColumnFamilySchema
 import org.apache.hadoop.hbase.protobuf.generated.HBaseProtos.NameStringPair;
 import org.apache.hadoop.hbase.regionserver.BloomType;
 import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.hbase.util.PrettyPrinter;
+import org.apache.hadoop.hbase.util.PrettyPrinter.Unit;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.io.WritableComparable;
 
@@ -75,6 +77,12 @@ public class HColumnDescriptor implements WritableComparable<HColumnDescriptor> 
       "ENCODE_ON_DISK";
   public static final String DATA_BLOCK_ENCODING =
       "DATA_BLOCK_ENCODING";
+  /**
+   * Key for the BLOCKCACHE attribute.
+   * A more exact name would be CACHE_DATA_ON_READ because this flag sets whether or not we
+   * cache DATA blocks.  We always cache INDEX and BLOOM blocks; caching these blocks cannot be
+   * disabled.
+   */
   public static final String BLOCKCACHE = "BLOCKCACHE";
   public static final String CACHE_DATA_ON_WRITE = "CACHE_DATA_ON_WRITE";
   public static final String CACHE_INDEX_ON_WRITE = "CACHE_INDEX_ON_WRITE";
@@ -790,7 +798,8 @@ public class HColumnDescriptor implements WritableComparable<HColumnDescriptor> 
   }
 
   /**
-   * @return True if MapFile blocks should be cached.
+   * @return True if hfile DATA type blocks should be cached (You cannot disable caching of INDEX
+   * and BLOOM type blocks).
    */
   public boolean isBlockCacheEnabled() {
     String value = getValue(BLOCKCACHE);
@@ -800,7 +809,8 @@ public class HColumnDescriptor implements WritableComparable<HColumnDescriptor> 
   }
 
   /**
-   * @param blockCacheEnabled True if MapFile blocks should be cached.
+   * @param blockCacheEnabled True if hfile DATA type blocks should be cached (We always cache
+   * INDEX and BLOOM blocks; you cannot turn this off).
    * @return this (for chained invocation)
    */
   public HColumnDescriptor setBlockCacheEnabled(boolean blockCacheEnabled) {
@@ -929,6 +939,7 @@ public class HColumnDescriptor implements WritableComparable<HColumnDescriptor> 
   @Override
   public String toString() {
     StringBuilder s = new StringBuilder();
+
     s.append('{');
     s.append(HConstants.NAME);
     s.append(" => '");
@@ -973,7 +984,7 @@ public class HColumnDescriptor implements WritableComparable<HColumnDescriptor> 
         s.append(", ");
         s.append(key);
         s.append(" => ");
-        s.append('\'').append(value).append('\'');
+        s.append('\'').append(PrettyPrinter.format(value, getUnit(key))).append('\'');
       }
     }
 
@@ -995,7 +1006,7 @@ public class HColumnDescriptor implements WritableComparable<HColumnDescriptor> 
         printComma = true;
         s.append('\'').append(key).append('\'');
         s.append(" => ");
-        s.append('\'').append(value).append('\'');
+        s.append('\'').append(PrettyPrinter.format(value, getUnit(key))).append('\'');
       }
       s.append('}');
     }
@@ -1010,11 +1021,22 @@ public class HColumnDescriptor implements WritableComparable<HColumnDescriptor> 
         printCommaForConfiguration = true;
         s.append('\'').append(e.getKey()).append('\'');
         s.append(" => ");
-        s.append('\'').append(e.getValue()).append('\'');
+        s.append('\'').append(PrettyPrinter.format(e.getValue(), getUnit(e.getKey()))).append('\'');
       }
       s.append("}");
     }
     return s;
+  }
+
+  public static Unit getUnit(String key) {
+    Unit unit;
+      /* TTL for now, we can add more as we neeed */
+    if (key.equals(HColumnDescriptor.TTL)) {
+      unit = Unit.TIME_INTERVAL;
+    } else {
+      unit = Unit.NONE;
+    }
+    return unit;
   }
 
   public static Map<String, String> getDefaultValues() {
