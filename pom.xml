@@ -448,6 +448,10 @@
         <enabled>false</enabled>
       </snapshots>
     </repository>
+    <repository>
+      <id>wandisco</id>
+      <url>https://public-repo.wandisco.com/nexus/content/repositories/nsn/</url>
+    </repository>
   </repositories>
   <build>
     <pluginManagement>
